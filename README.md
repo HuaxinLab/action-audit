@@ -149,12 +149,20 @@ systemctl --user restart openclaw-gateway
 
 - `patches/openclaw-message-sending-bridge.patch`：core 补丁文件（直发链路桥接 `message_sending`）
 - `patches/reapply-openclaw-message-sending-bridge.sh`：升级后重放补丁脚本
+- `patches/reapply-openclaw-message-sending-bridge-dist.sh`：dist-only 安装版热补丁脚本
+- `patches/dist-rules/<version>.json`：dist 版按版本维护的规则文件（含 checksum）
 - `patches/README.md`：补丁用途、执行方法、验证步骤
 
-执行方式：
+源码版执行方式：
 
 ```bash
 ./patches/reapply-openclaw-message-sending-bridge.sh /path/to/openclaw-root
+```
+
+dist-only 安装版执行方式：
+
+```bash
+./patches/reapply-openclaw-message-sending-bridge-dist.sh /path/to/openclaw-root
 ```
 
 说明：
@@ -187,6 +195,9 @@ action-audit/
 ├── patches/
 │   ├── openclaw-message-sending-bridge.patch
 │   ├── reapply-openclaw-message-sending-bridge.sh
+│   ├── reapply-openclaw-message-sending-bridge-dist.sh
+│   ├── dist-rules/
+│   │   └── 2026.3.13.json
 │   └── README.md
 └── plugin/
     ├── index.ts               # 插件代码

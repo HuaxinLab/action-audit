@@ -1,0 +1,17 @@
+{
+  "version": "2026.3.13",
+  "distFile": "dist/reply-Bm8VrLQh.js",
+  "sha256": "89a8af0c82da819e5c82a7d92e569cce35f8d0f40103ff4adc66b9cb9b2d246e",
+  "replacements": [
+    {
+      "name": "inject-hook-runner",
+      "match": "\tconst { unregister } = registerDispatcher({\n\t\tpending: () => pending,\n\t\twaitForIdle: () => sendChain\n\t});\n\tconst enqueue = (kind, payload) => {",
+      "replace": "\tconst { unregister } = registerDispatcher({\n\t\tpending: () => pending,\n\t\twaitForIdle: () => sendChain\n\t});\n\tconst hookRunner = getGlobalHookRunner();\n\tconst hasMessageSendingHooks = hookRunner?.hasHooks(\"message_sending\") ?? false;\n\tconst enqueue = (kind, payload) => {"
+    },
+    {
+      "name": "wrap-deliver-with-message-sending",
+      "match": "\t\t\tawait options.deliver(normalized, { kind });",
+      "replace": "\t\t\tlet toDeliver = normalized;\n\t\t\tif (hasMessageSendingHooks) {\n\t\t\t\ttry {\n\t\t\t\t\tconst originalContent = toDeliver.text ?? \"\";\n\t\t\t\t\tconst hookResult = await hookRunner?.runMessageSending({\n\t\t\t\t\t\tto: String(options.messageSendingContext?.conversationId ?? options.messageSendingContext?.channelId ?? \"\"),\n\t\t\t\t\t\tcontent: originalContent,\n\t\t\t\t\t\tmetadata: {\n\t\t\t\t\t\t\tchannel: options.messageSendingContext?.channelId ?? \"unknown\",\n\t\t\t\t\t\t\taccountId: options.messageSendingContext?.accountId,\n\t\t\t\t\t\t\tbridge: \"reply-dispatcher\",\n\t\t\t\t\t\t\tkind,\n\t\t\t\t\t\t\tmediaUrls: toDeliver.mediaUrls ?? (toDeliver.mediaUrl ? [toDeliver.mediaUrl] : [])\n\t\t\t\t\t\t}\n\t\t\t\t\t}, {\n\t\t\t\t\t\tchannelId: options.messageSendingContext?.channelId ?? \"unknown\",\n\t\t\t\t\t\taccountId: options.messageSendingContext?.accountId,\n\t\t\t\t\t\tconversationId: options.messageSendingContext?.conversationId\n\t\t\t\t\t});\n\t\t\t\t\tif (hookResult?.cancel) return;\n\t\t\t\t\tif (typeof hookResult?.content === \"string\" && hookResult.content !== originalContent) toDeliver = {\n\t\t\t\t\t\t...toDeliver,\n\t\t\t\t\t\ttext: hookResult.content\n\t\t\t\t\t};\n\t\t\t\t} catch (hookErr) {\n\t\t\t\t\toptions.onError?.(hookErr, { kind });\n\t\t\t\t}\n\t\t\t}\n\t\t\tawait options.deliver(toDeliver, { kind });"
+    }
+  ]
+}
