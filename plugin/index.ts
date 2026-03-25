@@ -34,6 +34,7 @@ type ToolRule = {
 };
 
 type AuditConfig = {
+  enabled: boolean;
   maxDisplay: number;
   separator: string;
   rules: {
@@ -78,6 +79,7 @@ function dbg(msg: string) {
 
 
 const DEFAULT_CONFIG: AuditConfig = {
+  enabled: true,
   maxDisplay: 10,
   separator: "\n\n——————————\n",
   icons: {
@@ -134,6 +136,7 @@ function loadConfig(): AuditConfig {
     const loaded = JSON.parse(raw);
     // Merge with defaults to ensure all fields exist
     return {
+      enabled: loaded.enabled ?? DEFAULT_CONFIG.enabled,
       maxDisplay: loaded.maxDisplay ?? DEFAULT_CONFIG.maxDisplay,
       separator: normalizeEscapedText(loaded.separator ?? DEFAULT_CONFIG.separator),
       icons: { ...DEFAULT_CONFIG.icons, ...loaded.icons },
@@ -163,6 +166,13 @@ function loadConfig(): AuditConfig {
     }
     return DEFAULT_CONFIG;
   }
+}
+
+function saveConfig(next: AuditConfig): void {
+  try {
+    mkdirSync(CONFIG_DIR, { recursive: true });
+    writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2), "utf-8");
+  } catch {}
 }
 
 function normalizeEscapedText(value: string): string {
@@ -206,6 +216,11 @@ function getBuffer(ctx?: any): AuditEntry[] {
 function clearBuffer(ctx?: any): void {
   const key = getSessionKey(ctx);
   bufferBySession.delete(key);
+}
+
+function clearAllBuffers(): void {
+  bufferBySession.clear();
+  fallbackByRoute.clear();
 }
 
 function getRouteKey(ctx: any): string {
@@ -443,11 +458,42 @@ export default {
     config = loadConfig();
     dbg("register() called — plugin loaded successfully");
 
+    // ── /audit command ───────────────────────────────────────────────
+    api.registerCommand({
+      name: "audit",
+      description: "Action Audit: /audit on|off|status|help",
+      acceptsArgs: true,
+      handler(ctx: any) {
+        const args = String(ctx?.args ?? "").trim().toLowerCase();
+        if (!args || args === "help") {
+          return { text: "用法：/audit on | /audit off | /audit status" };
+        }
+        if (args === "status") {
+          return { text: `Action Audit 当前状态：${config.enabled ? "开启" : "关闭"}` };
+        }
+        if (args === "on") {
+          config = { ...config, enabled: true };
+          saveConfig(config);
+          dbg("command /audit on");
+          return { text: "Action Audit 已开启" };
+        }
+        if (args === "off") {
+          config = { ...config, enabled: false };
+          clearAllBuffers();
+          saveConfig(config);
+          dbg("command /audit off");
+          return { text: "Action Audit 已关闭" };
+        }
+        return { text: "用法：/audit on | /audit off | /audit status" };
+      },
+    });
+
     // ── after_tool_call: capture each tool invocation ──
     api.on(
       "after_tool_call",
       (event: any, ctx: any) => {
         try {
+          if (!config.enabled) return undefined;
           const toolName = String(event?.toolName ?? "unknown");
           const params: Record<string, unknown> = event?.params ?? {};
           const error = event?.error;
@@ -475,6 +521,7 @@ export default {
     api.on(
       "message_sending",
       (event: any, ctx: any) => {
+        if (!config.enabled) return undefined;
         try {
           const ctxKeys = ctx && typeof ctx === "object" ? Object.keys(ctx).slice(0, 20) : [];
           dbg(`message_sending CTX keys=${ctxKeys.join(",")}`);
