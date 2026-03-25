@@ -67,8 +67,7 @@ message_sending 触发
 
 - **敏感信息脱敏**：命令参数中含 key/token/password/secret 等关键词的值自动替换为 `****`
 - **错误隔离**：所有 Hook handler 外层 try-catch，插件报错不阻断消息发送
-- **零 token 消耗（默认）**：`deliveryMode=message_sending` 时纯代码层处理，不调用大模型
-- **可降级兜底**：`deliveryMode=prompt_fallback` 时通过 prompt 注入审计区块（会消耗 token，依赖模型遵从）
+- **零 token 消耗**：纯代码层处理，不调用大模型（仅依赖 `message_sending`）
 
 ## 配置
 
@@ -78,7 +77,6 @@ message_sending 触发
 {
   "maxDisplay": 10,
   "separator": "\n\n——————————\n",
-  "deliveryMode": "message_sending",
   "icons": {
     "high": "⚠️",
     "medium": "🌐",
@@ -113,7 +111,6 @@ message_sending 触发
 |------|------|
 | `maxDisplay` | 操作清单最多显示条数，超出部分显示"…及其他 N 项操作" |
 | `separator` | 正文与操作清单之间的分隔线 |
-| `deliveryMode` | 交付模式：`message_sending`（默认，零 token）或 `prompt_fallback`（兜底） |
 | `icons` | 各风险级别的图标 |
 | `rules.high/medium/low` | 工具名 → 显示标签的映射，决定风险分级 |
 | `sensitivePatterns` | 触发脱敏的关键词列表 |
@@ -151,9 +148,8 @@ systemctl --user restart openclaw-gateway
 ### message_sending Hook 不触发（2026-03-25 发现）
 
 - **现象**：`after_tool_call` 正常触发并捕获工具调用，但 `message_sending` 不触发，操作清单无法追加到回复
-- **影响范围**：全局，smart-model-router 的 `message_sending` 同样不触发（模型标注改由 `before_prompt_build` 注入 prompt 实现）
-- **原因**：待排查，疑似 OpenClaw v2026.2.13 的 Hook runner 问题
-- **当前可用方案**：将 `deliveryMode` 改为 `prompt_fallback`，重启网关后可继续输出审计区块（会消耗 token，依赖模型遵从）
+- **影响范围**：依赖自定义直发路径的 channel 可能都受影响
+- **原因**：部分渠道插件未经过核心共享出站链路，导致 `message_sending` 不会触发
 
 ### 工具名差异
 

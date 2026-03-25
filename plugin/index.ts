@@ -28,10 +28,6 @@ type ToolRule = {
 type AuditConfig = {
   maxDisplay: number;
   separator: string;
-  // Delivery mode:
-  // - message_sending: append via message_sending hook only (zero token cost)
-  // - prompt_fallback: inject append-instruction via before_prompt_build only
-  deliveryMode: "message_sending" | "prompt_fallback";
   rules: {
     high: Record<string, string>;    // toolName -> display label
     medium: Record<string, string>;
@@ -62,7 +58,6 @@ function dbg(msg: string) {
 const DEFAULT_CONFIG: AuditConfig = {
   maxDisplay: 10,
   separator: "\n\n——————————\n",
-  deliveryMode: "message_sending",
   icons: {
     high: "⚠️",
     medium: "🌐",
@@ -118,7 +113,6 @@ function loadConfig(): AuditConfig {
     return {
       maxDisplay: loaded.maxDisplay ?? DEFAULT_CONFIG.maxDisplay,
       separator: loaded.separator ?? DEFAULT_CONFIG.separator,
-      deliveryMode: loaded.deliveryMode ?? DEFAULT_CONFIG.deliveryMode,
       icons: { ...DEFAULT_CONFIG.icons, ...loaded.icons },
       rules: {
         high: { ...DEFAULT_CONFIG.rules.high, ...loaded.rules?.high },
@@ -266,14 +260,6 @@ function buildAuditSummary(entries: AuditEntry[]): string {
   return summary;
 }
 
-function shouldUsePromptFallback(): boolean {
-  return config.deliveryMode === "prompt_fallback";
-}
-
-function shouldUseMessageSending(): boolean {
-  return config.deliveryMode === "message_sending";
-}
-
 // ── Plugin Entry ────────────────────────────────────────────────────────────
 
 export default {
@@ -312,41 +298,12 @@ export default {
       { priority: 0 },
     );
 
-    // ── before_prompt_build: optional fallback when message_sending is unavailable ──
-    api.on(
-      "before_prompt_build",
-      (_event: any, ctx: any) => {
-        try {
-          if (!shouldUsePromptFallback()) return undefined;
-          const buffer = getBuffer(ctx);
-          if (buffer.length === 0) return undefined;
-
-          const summary = buildAuditSummary(buffer);
-          if (!summary) return undefined;
-
-          dbg(`before_prompt_build: fallback active, session=${getSessionKey(ctx)} entries=${buffer.length}`);
-          clearBuffer(ctx);
-          return {
-            prependContext:
-              "输出约束（必须遵守）：你在给出最终回复后，必须原样追加以下审计区块；" +
-              "不得改写、不得省略、不得新增未执行的操作。\n\n" +
-              `${config.separator}${summary}`,
-          };
-        } catch (e: any) {
-          dbg(`before_prompt_build ERROR: ${e?.message}`);
-          return undefined;
-        }
-      },
-      { priority: -10 },
-    );
-
     // ── message_sending: append audit summary ──
     api.on(
       "message_sending",
       (event: any, ctx: any) => {
         dbg(`message_sending FIRED: session=${ctx?.sessionKey} content_len=${String(event?.content ?? "").length}`);
         try {
-          if (!shouldUseMessageSending()) return undefined;
           const buffer = getBuffer(ctx);
 
           if (buffer.length === 0) return undefined;
