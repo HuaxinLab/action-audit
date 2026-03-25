@@ -143,6 +143,26 @@ cp plugin/* ~/.openclaw/extensions/action-audit/
 systemctl --user restart openclaw-gateway
 ```
 
+## Core Patch 管理（统一补丁目录）
+
+本项目将 OpenClaw core 的兼容补丁与说明统一放在 `patches/` 目录，和插件一起维护：
+
+- `patches/openclaw-message-sending-bridge.patch`：core 补丁文件（直发链路桥接 `message_sending`）
+- `patches/reapply-openclaw-message-sending-bridge.sh`：升级后重放补丁脚本
+- `patches/README.md`：补丁用途、执行方法、验证步骤
+
+执行方式：
+
+```bash
+./patches/reapply-openclaw-message-sending-bridge.sh /path/to/openclaw-root
+```
+
+说明：
+- 该补丁修改的是 OpenClaw core，不是插件安装目录本身。
+- 脚本会自动备份被修改文件到 `.action-audit-backups/`，再执行补丁。
+- 目标目录应为 OpenClaw 源码目录（含 `.git` 和 `src/`）。
+- 每次 OpenClaw core 升级后，按需重放补丁并重启网关。
+
 ## 已知问题
 
 ### message_sending Hook 不触发（2026-03-25 发现）
@@ -164,6 +184,10 @@ OpenClaw 实际的工具名可能与预期不同（如 `exec` 而非 `bash`）�
 ```
 action-audit/
 ├── README.md                  # 本文档
+├── patches/
+│   ├── openclaw-message-sending-bridge.patch
+│   ├── reapply-openclaw-message-sending-bridge.sh
+│   └── README.md
 └── plugin/
     ├── index.ts               # 插件代码
     ├── openclaw.plugin.json   # 插件清单

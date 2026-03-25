@@ -1,0 +1,106 @@
+diff --git a/src/plugin-sdk/channel-reply-pipeline.ts b/src/plugin-sdk/channel-reply-pipeline.ts
+--- a/src/plugin-sdk/channel-reply-pipeline.ts
++++ b/src/plugin-sdk/channel-reply-pipeline.ts
+@@ -15,6 +15,10 @@
+ 
+ export type ChannelReplyPipeline = ReplyPrefixOptions & {
+   typingCallbacks?: TypingCallbacks;
++  messageSendingContext?: {
++    channelId: string;
++    accountId?: string;
++  };
+ };
+ 
+ export function createChannelReplyPipeline(params: {
+@@ -37,5 +41,10 @@
+       : params.typing
+         ? { typingCallbacks: createTypingCallbacks(params.typing) }
+         : {}),
++    ...(params.channel
++      ? {
++          messageSendingContext: { channelId: params.channel, accountId: params.accountId },
++        }
++      : {}),
+   };
+ }
+diff --git a/src/auto-reply/reply/reply-dispatcher.ts b/src/auto-reply/reply/reply-dispatcher.ts
+--- a/src/auto-reply/reply/reply-dispatcher.ts
++++ b/src/auto-reply/reply/reply-dispatcher.ts
+@@ -1,5 +1,6 @@
+ import type { TypingCallbacks } from "../../channels/typing.js";
+ import type { HumanDelayConfig } from "../../config/types.js";
++import { getGlobalHookRunner } from "../../plugins/hooks.js";
+ import { sleep } from "../../utils.js";
+ import type { GetReplyOptions, ReplyPayload } from "../types.js";
+ import { registerDispatcher } from "./dispatcher-registry.js";
+@@ -56,6 +57,15 @@
+   onSkip?: ReplyDispatchSkipHandler;
+   /** Human-like delay between block replies for natural rhythm. */
+   humanDelay?: HumanDelayConfig;
++  /**
++   * Optional bridge context for applying message_sending hook on direct
++   * channel reply paths that do not pass through deliverOutboundPayloads.
++   */
++  messageSendingContext?: {
++    channelId: string;
++    accountId?: string;
++    conversationId?: string;
++  };
+ };
+ 
+ export type ReplyDispatcherWithTypingOptions = Omit<ReplyDispatcherOptions, "onIdle"> & {
+@@ -131,6 +141,8 @@
+     pending: () => pending,
+     waitForIdle: () => sendChain,
+   });
++  const hookRunner = getGlobalHookRunner();
++  const hasMessageSendingHooks = hookRunner?.hasHooks("message_sending") ?? false;
+ 
+   const enqueue = (kind: ReplyDispatchKind, payload: ReplyPayload) => {
+     const normalized = normalizeReplyPayloadInternal(payload, {
+@@ -164,7 +176,44 @@
+         }
+         // Safe: deliver is called inside an async .then() callback, so even a synchronous
+         // throw becomes a rejection that flows through .catch()/.finally(), ensuring cleanup.
+-        await options.deliver(normalized, { kind });
++        let toDeliver = normalized;
++        if (hasMessageSendingHooks && options.messageSendingContext?.channelId) {
++          try {
++            const originalContent = toDeliver.text ?? "";
++            const hookResult = await hookRunner?.runMessageSending(
++              {
++                to:
++                  options.messageSendingContext.conversationId ??
++                  options.messageSendingContext.channelId,
++                content: originalContent,
++                metadata: {
++                  channel: options.messageSendingContext.channelId,
++                  accountId: options.messageSendingContext.accountId,
++                  bridge: "reply-dispatcher",
++                  kind,
++                  mediaUrls: toDeliver.mediaUrls ?? (toDeliver.mediaUrl ? [toDeliver.mediaUrl] : []),
++                },
++              },
++              {
++                channelId: options.messageSendingContext.channelId,
++                accountId: options.messageSendingContext.accountId,
++                conversationId: options.messageSendingContext.conversationId,
++              },
++            );
++            if (hookResult?.cancel) {
++              return;
++            }
++            if (typeof hookResult?.content === "string" && hookResult.content !== originalContent) {
++              toDeliver = {
++                ...toDeliver,
++                text: hookResult.content,
++              };
++            }
++          } catch (hookErr) {
++            options.onError?.(hookErr, { kind });
++          }
++        }
++        await options.deliver(toDeliver, { kind });
+       })
+       .catch((err) => {
+         options.onError?.(err, { kind });
