@@ -4,19 +4,34 @@
   "sha256": "89a8af0c82da819e5c82a7d92e569cce35f8d0f40103ff4adc66b9cb9b2d246e",
   "replacements": [
     {
-      "name": "dispatcher-run-message-sending-before-deliver",
-      "match": "\t\t\tawait options.deliver(normalized, { kind });",
-      "replace": "\t\t\tlet outboundPayload = normalized;\n\t\t\tconst hookRunner = getGlobalHookRunner();\n\t\t\tconst hasMessageSendingHooks = hookRunner?.hasHooks(\"message_sending\") ?? false;\n\t\t\tif (hasMessageSendingHooks) {\n\t\t\t\tconst rawText = outboundPayload.text ?? \"\";\n\t\t\t\tconst sendingResult = await hookRunner.runMessageSending({\n\t\t\t\t\tto: options.messageSendingContext?.conversationId ?? \"\",\n\t\t\t\t\tcontent: rawText,\n\t\t\t\t\tmetadata: {\n\t\t\t\t\t\tchannel: options.messageSendingContext?.channelId,\n\t\t\t\t\t\taccountId: options.messageSendingContext?.accountId\n\t\t\t\t\t}\n\t\t\t\t}, {\n\t\t\t\t\tchannelId: options.messageSendingContext?.channelId,\n\t\t\t\t\taccountId: options.messageSendingContext?.accountId,\n\t\t\t\t\tconversationId: options.messageSendingContext?.conversationId,\n\t\t\t\t\tsessionKey: options.messageSendingContext?.sessionKey\n\t\t\t\t});\n\t\t\t\tif (sendingResult?.cancel) return;\n\t\t\t\tif (typeof sendingResult?.content === \"string\") outboundPayload = { ...outboundPayload, text: sendingResult.content };\n\t\t\t}\n\t\t\tawait options.deliver(outboundPayload, { kind });"
+      "name": "inject-message-sending-wrapper-in-dispatch-from-config",
+      "match": "\tconst hookRunner = getGlobalHookRunner();\n\tconst timestamp = typeof ctx.Timestamp === \"number\" && Number.isFinite(ctx.Timestamp) ? ctx.Timestamp : void 0;",
+      "replace": "\tconst hookRunner = getGlobalHookRunner();\n\tconst hasMessageSendingHooks = hookRunner?.hasHooks(\"message_sending\") ?? false;\n\tconst messageSendingTo = String(ctx.To ?? ctx.OriginatingTo ?? ctx.From ?? \"\");\n\tconst messageSendingContext = {\n\t\tchannelId: normalizeMessageChannel(ctx.Provider ?? ctx.Surface) ?? String(ctx.Provider ?? ctx.Surface ?? \"unknown\").toLowerCase(),\n\t\taccountId: ctx.AccountId ?? void 0,\n\t\tconversationId: messageSendingTo || ctx.ConversationID || ctx.conversationId || void 0,\n\t\tsessionKey: ctx.SessionKey ?? void 0\n\t};\n\tconst runMessageSendingForPayload = async (payload, kind) => {\n\t\tif (!hasMessageSendingHooks) return payload;\n\t\tconst rawText = payload?.text;\n\t\tif (typeof rawText !== \"string\") return payload;\n\t\ttry {\n\t\t\tconst hookResult = await hookRunner.runMessageSending({\n\t\t\t\tto: messageSendingTo,\n\t\t\t\tcontent: rawText,\n\t\t\t\tmetadata: {\n\t\t\t\t\tchannel: messageSendingContext.channelId,\n\t\t\t\t\taccountId: messageSendingContext.accountId,\n\t\t\t\t\tkind\n\t\t\t\t}\n\t\t\t}, messageSendingContext);\n\t\t\tif (hookResult?.cancel) return null;\n\t\t\tif (typeof hookResult?.content === \"string\" && hookResult.content !== rawText) return {\n\t\t\t\t...payload,\n\t\t\t\ttext: hookResult.content\n\t\t\t};\n\t\t} catch {}\n\t\treturn payload;\n\t};\n\tconst sendWithMessageSending = async (kind, payload) => {\n\t\tconst nextPayload = await runMessageSendingForPayload(payload, kind);\n\t\tif (!nextPayload) return false;\n\t\tif (kind === \"tool\") return dispatcher.sendToolResult(nextPayload);\n\t\tif (kind === \"block\") return dispatcher.sendBlockReply(nextPayload);\n\t\treturn dispatcher.sendFinalReply(nextPayload);\n\t};\n\tconst timestamp = typeof ctx.Timestamp === \"number\" && Number.isFinite(ctx.Timestamp) ? ctx.Timestamp : void 0;"
     },
     {
-      "name": "inject-dispatcher-message-context-buffered",
-      "match": "\tconst { dispatcher, replyOptions, markDispatchIdle } = createReplyDispatcherWithTyping(params.dispatcherOptions);",
-      "replace": "\tconst { dispatcher, replyOptions, markDispatchIdle } = createReplyDispatcherWithTyping({\n\t\t...params.dispatcherOptions,\n\t\tmessageSendingContext: {\n\t\t\tchannelId: params.ctx?.Provider ?? params.ctx?.Surface,\n\t\t\taccountId: params.ctx?.AccountId,\n\t\t\tconversationId: params.ctx?.To ?? params.ctx?.OriginatingTo ?? params.ctx?.From,\n\t\t\tsessionKey: params.ctx?.SessionKey\n\t\t}\n\t});"
+      "name": "replace-fast-abort-final-send",
+      "match": "\t\t\t} else queuedFinal = dispatcher.sendFinalReply(payload);",
+      "replace": "\t\t\t} else queuedFinal = await sendWithMessageSending(\"final\", payload);"
     },
     {
-      "name": "inject-dispatcher-message-context-plain",
-      "match": "\tconst dispatcher = createReplyDispatcher(params.dispatcherOptions);",
-      "replace": "\tconst dispatcher = createReplyDispatcher({\n\t\t...params.dispatcherOptions,\n\t\tmessageSendingContext: {\n\t\t\tchannelId: params.ctx?.Provider ?? params.ctx?.Surface,\n\t\t\taccountId: params.ctx?.AccountId,\n\t\t\tconversationId: params.ctx?.To ?? params.ctx?.OriginatingTo ?? params.ctx?.From,\n\t\t\tsessionKey: params.ctx?.SessionKey\n\t\t}\n\t});"
+      "name": "replace-tool-send",
+      "match": "\t\t\t\t\tif (shouldRouteToOriginating) await sendPayloadAsync(deliveryPayload, void 0, false);\n\t\t\t\t\telse dispatcher.sendToolResult(deliveryPayload);",
+      "replace": "\t\t\t\t\tif (shouldRouteToOriginating) await sendPayloadAsync(deliveryPayload, void 0, false);\n\t\t\t\t\telse await sendWithMessageSending(\"tool\", deliveryPayload);"
+    },
+    {
+      "name": "replace-block-send",
+      "match": "\t\t\t\t\tif (shouldRouteToOriginating) await sendPayloadAsync(ttsPayload, context?.abortSignal, false);\n\t\t\t\t\telse dispatcher.sendBlockReply(ttsPayload);",
+      "replace": "\t\t\t\t\tif (shouldRouteToOriginating) await sendPayloadAsync(ttsPayload, context?.abortSignal, false);\n\t\t\t\t\telse await sendWithMessageSending(\"block\", ttsPayload);"
+    },
+    {
+      "name": "replace-final-loop-send",
+      "match": "\t\t\t} else queuedFinal = dispatcher.sendFinalReply(ttsReply) || queuedFinal;",
+      "replace": "\t\t\t} else queuedFinal = await sendWithMessageSending(\"final\", ttsReply) || queuedFinal;"
+    },
+    {
+      "name": "replace-tts-only-send",
+      "match": "\t\t\t\t} else queuedFinal = dispatcher.sendFinalReply(ttsOnlyPayload) || queuedFinal;",
+      "replace": "\t\t\t\t} else queuedFinal = await sendWithMessageSending(\"final\", ttsOnlyPayload) || queuedFinal;"
     }
   ]
 }

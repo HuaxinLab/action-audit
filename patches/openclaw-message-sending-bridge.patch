@@ -1,106 +1,144 @@
-diff --git a/src/plugin-sdk/channel-reply-pipeline.ts b/src/plugin-sdk/channel-reply-pipeline.ts
---- a/src/plugin-sdk/channel-reply-pipeline.ts
-+++ b/src/plugin-sdk/channel-reply-pipeline.ts
-@@ -15,6 +15,10 @@
- 
- export type ChannelReplyPipeline = ReplyPrefixOptions & {
-   typingCallbacks?: TypingCallbacks;
-+  messageSendingContext?: {
-+    channelId: string;
-+    accountId?: string;
-+  };
- };
- 
- export function createChannelReplyPipeline(params: {
-@@ -37,5 +41,10 @@
-       : params.typing
-         ? { typingCallbacks: createTypingCallbacks(params.typing) }
-         : {}),
-+    ...(params.channel
-+      ? {
-+          messageSendingContext: { channelId: params.channel, accountId: params.accountId },
-+        }
-+      : {}),
-   };
- }
-diff --git a/src/auto-reply/reply/reply-dispatcher.ts b/src/auto-reply/reply/reply-dispatcher.ts
---- a/src/auto-reply/reply/reply-dispatcher.ts
-+++ b/src/auto-reply/reply/reply-dispatcher.ts
-@@ -1,5 +1,6 @@
- import type { TypingCallbacks } from "../../channels/typing.js";
- import type { HumanDelayConfig } from "../../config/types.js";
-+import { getGlobalHookRunner } from "../../plugins/hooks.js";
- import { sleep } from "../../utils.js";
- import type { GetReplyOptions, ReplyPayload } from "../types.js";
- import { registerDispatcher } from "./dispatcher-registry.js";
-@@ -56,6 +57,15 @@
-   onSkip?: ReplyDispatchSkipHandler;
-   /** Human-like delay between block replies for natural rhythm. */
-   humanDelay?: HumanDelayConfig;
-+  /**
-+   * Optional bridge context for applying message_sending hook on direct
-+   * channel reply paths that do not pass through deliverOutboundPayloads.
-+   */
-+  messageSendingContext?: {
-+    channelId: string;
-+    accountId?: string;
-+    conversationId?: string;
-+  };
- };
- 
- export type ReplyDispatcherWithTypingOptions = Omit<ReplyDispatcherOptions, "onIdle"> & {
-@@ -131,6 +141,8 @@
-     pending: () => pending,
-     waitForIdle: () => sendChain,
-   });
-+  const hookRunner = getGlobalHookRunner();
+diff --git a/src/auto-reply/reply/dispatch-from-config.ts b/src/auto-reply/reply/dispatch-from-config.ts
+index 5b18b417a3..6351c7c0c8 100644
+--- a/src/auto-reply/reply/dispatch-from-config.ts
++++ b/src/auto-reply/reply/dispatch-from-config.ts
+@@ -223,6 +223,71 @@ export async function dispatchReplyFromConfig(params: {
+   const inboundAudio = isInboundAudioContext(ctx);
+   const sessionTtsAuto = normalizeTtsAutoMode(sessionStoreEntry.entry?.ttsAuto);
+   const hookRunner = getGlobalHookRunner();
 +  const hasMessageSendingHooks = hookRunner?.hasHooks("message_sending") ?? false;
++  const messageSendingTo = String(ctx.To ?? ctx.OriginatingTo ?? ctx.From ?? "");
++  const legacyConversation = ctx as { ConversationID?: string; conversationId?: string };
++  const messageSendingContext = {
++    channelId:
++      normalizeMessageChannel(ctx.Provider ?? ctx.Surface) ??
++      String(ctx.Provider ?? ctx.Surface ?? "unknown").toLowerCase(),
++    accountId: ctx.AccountId ?? undefined,
++    conversationId: messageSendingTo || legacyConversation.ConversationID || legacyConversation.conversationId || undefined,
++    sessionKey: ctx.SessionKey ?? undefined,
++  };
++  const runMessageSendingForPayload = async (
++    payload: ReplyPayload,
++    kind: "tool" | "block" | "final",
++  ): Promise<ReplyPayload | null> => {
++    if (!hasMessageSendingHooks) {
++      return payload;
++    }
++    const rawText = payload?.text;
++    if (typeof rawText !== "string") {
++      return payload;
++    }
++    try {
++      const hookResult = await hookRunner.runMessageSending(
++        {
++          to: messageSendingTo,
++          content: rawText,
++          metadata: {
++            channel: messageSendingContext.channelId,
++            accountId: messageSendingContext.accountId,
++            kind,
++          },
++        },
++        messageSendingContext,
++      );
++      if (hookResult?.cancel) {
++        return null;
++      }
++      if (typeof hookResult?.content === "string" && hookResult.content !== rawText) {
++        return {
++          ...payload,
++          text: hookResult.content,
++        };
++      }
++    } catch {
++      // Do not break message delivery on hook errors.
++    }
++    return payload;
++  };
++  const sendWithMessageSending = async (
++    kind: "tool" | "block" | "final",
++    payload: ReplyPayload,
++  ): Promise<boolean> => {
++    const nextPayload = await runMessageSendingForPayload(payload, kind);
++    if (!nextPayload) {
++      return false;
++    }
++    if (kind === "tool") {
++      return dispatcher.sendToolResult(nextPayload);
++    }
++    if (kind === "block") {
++      return dispatcher.sendBlockReply(nextPayload);
++    }
++    return dispatcher.sendFinalReply(nextPayload);
++  };
  
-   const enqueue = (kind: ReplyDispatchKind, payload: ReplyPayload) => {
-     const normalized = normalizeReplyPayloadInternal(payload, {
-@@ -164,7 +176,44 @@
+   // Extract message context for hooks (plugin and internal)
+   const timestamp =
+@@ -327,8 +392,8 @@ export async function dispatchReplyFromConfig(params: {
+       return result.ok;
+     }
+     return mode === "additive"
+-      ? dispatcher.sendToolResult(payload)
+-      : dispatcher.sendFinalReply(payload);
++      ? await sendWithMessageSending("tool", payload)
++      : await sendWithMessageSending("final", payload);
+   };
+ 
+   const pluginOwnedBindingRecord =
+@@ -474,7 +539,7 @@ export async function dispatchReplyFromConfig(params: {
+           );
          }
-         // Safe: deliver is called inside an async .then() callback, so even a synchronous
-         // throw becomes a rejection that flows through .catch()/.finally(), ensuring cleanup.
--        await options.deliver(normalized, { kind });
-+        let toDeliver = normalized;
-+        if (hasMessageSendingHooks && options.messageSendingContext?.channelId) {
-+          try {
-+            const originalContent = toDeliver.text ?? "";
-+            const hookResult = await hookRunner?.runMessageSending(
-+              {
-+                to:
-+                  options.messageSendingContext.conversationId ??
-+                  options.messageSendingContext.channelId,
-+                content: originalContent,
-+                metadata: {
-+                  channel: options.messageSendingContext.channelId,
-+                  accountId: options.messageSendingContext.accountId,
-+                  bridge: "reply-dispatcher",
-+                  kind,
-+                  mediaUrls: toDeliver.mediaUrls ?? (toDeliver.mediaUrl ? [toDeliver.mediaUrl] : []),
-+                },
-+              },
-+              {
-+                channelId: options.messageSendingContext.channelId,
-+                accountId: options.messageSendingContext.accountId,
-+                conversationId: options.messageSendingContext.conversationId,
-+              },
-+            );
-+            if (hookResult?.cancel) {
-+              return;
-+            }
-+            if (typeof hookResult?.content === "string" && hookResult.content !== originalContent) {
-+              toDeliver = {
-+                ...toDeliver,
-+                text: hookResult.content,
-+              };
-+            }
-+          } catch (hookErr) {
-+            options.onError?.(hookErr, { kind });
-+          }
-+        }
-+        await options.deliver(toDeliver, { kind });
-       })
-       .catch((err) => {
-         options.onError?.(err, { kind });
+       } else {
+-        queuedFinal = dispatcher.sendFinalReply(payload);
++        queuedFinal = await sendWithMessageSending("final", payload);
+       }
+       const counts = dispatcher.getQueuedCounts();
+       counts.final += routedFinalCount;
+@@ -601,7 +666,7 @@ export async function dispatchReplyFromConfig(params: {
+             if (shouldRouteToOriginating) {
+               await sendPayloadAsync(deliveryPayload, undefined, false);
+             } else {
+-              dispatcher.sendToolResult(deliveryPayload);
++              await sendWithMessageSending("tool", deliveryPayload);
+             }
+           };
+           return run();
+@@ -635,7 +700,7 @@ export async function dispatchReplyFromConfig(params: {
+             if (shouldRouteToOriginating) {
+               await sendPayloadAsync(ttsPayload, context?.abortSignal, false);
+             } else {
+-              dispatcher.sendBlockReply(ttsPayload);
++              await sendWithMessageSending("block", ttsPayload);
+             }
+           };
+           return run();
+@@ -712,7 +777,7 @@ export async function dispatchReplyFromConfig(params: {
+           routedFinalCount += 1;
+         }
+       } else {
+-        queuedFinal = dispatcher.sendFinalReply(ttsReply) || queuedFinal;
++        queuedFinal = (await sendWithMessageSending("final", ttsReply)) || queuedFinal;
+       }
+     }
+ 
+@@ -764,7 +829,7 @@ export async function dispatchReplyFromConfig(params: {
+               );
+             }
+           } else {
+-            const didQueue = dispatcher.sendFinalReply(ttsOnlyPayload);
++            const didQueue = await sendWithMessageSending("final", ttsOnlyPayload);
+             queuedFinal = didQueue || queuedFinal;
+           }
+         }
+diff --git a/src/plugins/types.ts b/src/plugins/types.ts
+index 65e39e68de..f2f585c997 100644
+--- a/src/plugins/types.ts
++++ b/src/plugins/types.ts
+@@ -1643,6 +1643,7 @@ export type PluginHookMessageContext = {
+   channelId: string;
+   accountId?: string;
+   conversationId?: string;
++  sessionKey?: string;
+ };
+ 
+ export type PluginHookInboundClaimContext = PluginHookMessageContext & {

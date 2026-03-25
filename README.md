@@ -4,7 +4,7 @@
 
 ## 解决什么问题
 
-小派在对话中会自主执行命令、修改文件，但回复里可能只说"已完成"。用户无法确认：
+OpenClaw在对话中会自主执行命令、修改文件，但回复里可能只说"已完成"。用户无法确认：
 - 它是否真的执行了？（AI 有时会虚假声称）
 - 具体执行了什么命令？改了哪个文件？
 - 有没有做超出预期的操作？
@@ -14,7 +14,7 @@ Action Audit 在代码层捕获所有工具调用，强制追加到回复末尾�
 ## 效果预览
 
 ```
-小派的回复内容...
+OpenClaw的回复内容...
 
 (via ⚙️ glm5)
 ——————————
@@ -35,7 +35,7 @@ Action Audit 在代码层捕获所有工具调用，强制追加到回复末尾�
 | Hook | 优先级 | 执行模式 | 作用 |
 |------|--------|----------|------|
 | `after_tool_call` | 0 | void 并行 | 每次工具执行完成后触发，捕获工具名、参数、结果，存入内存缓存 |
-| `message_sending` | -99 | 修改串行 | 回复发送前触发，从缓存取操作列表，格式化后追加到回复末尾 |
+| `message_sending` | -1000 | 修改串行 | 回复发送前触发，从缓存取操作列表，格式化后追加到回复末尾 |
 
 ### 数据流
 
@@ -147,11 +147,11 @@ systemctl --user restart openclaw-gateway
 
 本项目将 OpenClaw core 的兼容补丁与说明统一放在 `patches/` 目录，和插件一起维护：
 
-- `patches/openclaw-message-sending-bridge.patch`：core 补丁文件（直发链路桥接 `message_sending`）
+- `patches/openclaw-message-sending-bridge.patch`：core 源码补丁（在 `dispatchReplyFromConfig` 单点包装发送）
 - `patches/reapply-openclaw-message-sending-bridge.sh`：升级后重放补丁脚本
 - `patches/reapply-openclaw-message-sending-bridge-dist.sh`：dist-only 安装版热补丁脚本
 - `patches/dist-rules/<version>.json`：dist 版按版本维护的规则文件（含 checksum）
-- `patches/README.md`：补丁用途、执行方法、验证步骤
+- `patches/README.md`：补丁用途、执行方法、验证步骤与版本策略
 
 源码版执行方式：
 
@@ -166,26 +166,103 @@ dist-only 安装版执行方式：
 ```
 
 说明：
-- 该补丁修改的是 OpenClaw core，不是插件安装目录本身。
+- 补丁修改的是 OpenClaw core 路径，不是插件目录本身。
 - 脚本会自动备份被修改文件到 `.action-audit-backups/`，再执行补丁。
-- 目标目录应为 OpenClaw 源码目录（含 `.git` 和 `src/`）。
 - 每次 OpenClaw core 升级后，按需重放补丁并重启网关。
 
 ## 已知问题
-
-### message_sending Hook 不触发（2026-03-25 发现）
-
-- **现象**：`after_tool_call` 正常触发并捕获工具调用，但 `message_sending` 不触发，操作清单无法追加到回复
-- **影响范围**：依赖自定义直发路径的 channel 可能都受影响
-- **原因**：部分渠道插件未经过核心共享出站链路，导致 `message_sending` 不会触发
 
 ### 工具名差异
 
 OpenClaw 实际的工具名可能与预期不同（如 `exec` 而非 `bash`）。可通过配置文件的 `rules` 添加新的工具名映射。
 
-### 会话隔离说明
+### 未打补丁时的限制
 
-插件已改为“按会话缓存”操作记录：不同聊天/会话的操作不会互相串线。
+在部分 OpenClaw 版本/发送路径中，用户对话回复不会稳定经过可用的 `message_sending` 修改链路，或缺少会话上下文。此时可能出现：
+- 操作清单不追加
+- 只能走全局兜底，无法按会话严格隔离
+
+建议应用本项目提供的 core patch（源码版或 dist 版）。
+
+## 修复方案
+
+### 方案一：改 OpenClaw 核心（推荐）
+
+**改动点**：`src/auto-reply/reply/dispatch-from-config.ts` 中的 `dispatchReplyFromConfig()`
+
+**原理**：`dispatchReplyFromConfig` 位于主回复发送路径，作用域里已有核心信息：
+
+- `ctx.SessionKey` — 会话标识
+- `hookRunner` — Hook 执行器（通过 `getGlobalHookRunner()` 获取）
+- `dispatcher` — 有 `sendFinalReply`/`sendBlockReply`/`sendToolResult` 方法
+
+**改动方式**：包装 dispatcher 发送方法（`sendToolResult`/`sendBlockReply`/`sendFinalReply`），在调用前先过 `runMessageSending` Hook：
+
+```
+dispatchReplyFromConfig({ ctx, dispatcher })
+  │
+  ├─→ sessionKey = ctx.SessionKey  ✅ 已有
+  ├─→ hookRunner = getGlobalHookRunner()  ✅ 已有
+  │
+  ├─→ 包装 dispatcher.sendFinalReply：
+  │     原始 payload
+  │       → hookRunner.runMessageSending({ content }, { sessionKey, ... })
+  │       → 用返回值替换 content（cancel 则跳过发送）
+  │       → 调原始 sendFinalReply(修改后的 payload)
+  │
+  ├─→ AI 推理（after_tool_call 存 buffer[sessionKey]）
+  │
+  └─→ 包装后的 sendFinalReply 调用时：
+        → message_sending 拿到 sessionKey
+        → 取 buffer[sessionKey]，追加操作清单
+        → deliver 发送修改后的内容
+```
+
+**改动量**：单点改动，避免逐个 channel 插件改造。
+
+**注意事项**：
+- 包装层必须 try-catch，Hook 失败时降级为直发，不阻断消息发送
+- 建议同时包装 `sendFinalReply`/`sendBlockReply`/`sendToolResult`
+- 非主对话发送（系统告警/cron）走标准出站管线，已有 `message_sending` 支持，不受影响
+
+**信息流向**：
+
+```
+═══ 改动后（所有 channel 统一，不改 channel 插件）═══
+
+channel 插件收到消息
+  │
+  ├─→ routing → sessionKey
+  │
+  ├─→ [飞书/微信] createReplyDispatcherWithTyping({ deliver })  ──┐
+  │   [Telegram等] dispatchReplyWithBufferedBlockDispatcher()     ──┤ 不改
+  │                                                                │
+  └─→ 都调 dispatchReplyFromConfig({                              ←┘
+        ctx,         // ctx.SessionKey ✅
+        dispatcher,  // 发送方法
+      })
+        │
+        ├─→ 包装 dispatcher 的发送方法 ← 【唯一改动点】
+        │
+        ├─→ AI 推理
+        │     └─→ after_tool_call ctx = { sessionKey } ✅
+        │           └─→ 插件存 buffer[sessionKey]
+        │
+        └─→ 包装后的 sendFinalReply(payload)
+              │
+              ├─→ runMessageSending({ content }, { sessionKey }) ✅
+              │     └─→ 插件取 buffer[sessionKey]，修改 content
+              │
+              └─→ 原始 sendFinalReply(修改后的 payload)
+                    └─→ deliver → channel SDK → 用户收到带操作清单的回复
+```
+
+### 方案二：before_prompt_build 降级（不推荐）
+
+通过 prompt 注入让 AI 自己输出操作清单。
+
+- 优点：不改核心代码，纯插件实现
+- 缺点：消耗 token、依赖 AI 遵从指令（不稳定）、难以保证当前轮次审计准确性
 
 ## 项目结构
 

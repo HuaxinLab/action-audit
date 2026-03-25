@@ -21,11 +21,11 @@ This patch is maintained alongside `action-audit` so behavior can stay consisten
 
 ## Current dist strategy (2026.3.13)
 
-- Inject `message_sending` before `options.deliver(...)` inside `createReplyDispatcher`.
-- Inject `messageSendingContext` from inbound `ctx` in:
-  - `dispatchInboundMessageWithBufferedDispatcher`
-  - `dispatchInboundMessageWithDispatcher`
-- Forward `sessionKey`/`channelId`/`accountId`/`conversationId` to hook context.
+- Patch `dispatchReplyFromConfig` only (single point), no channel plugin edits.
+- Wrap dispatcher sends (`sendToolResult`/`sendBlockReply`/`sendFinalReply`) with a pre-send `runMessageSending`.
+- Pass `sessionKey` from `ctx.SessionKey` as the primary isolation key.
+- Also pass `channelId`/`accountId`/`conversationId` in the message hook context when available.
+- Hook failures degrade to direct send (no message drop).
 
 ## Apply
 
