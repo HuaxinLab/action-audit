@@ -68,6 +68,7 @@ const DEFAULT_CONFIG: AuditConfig = {
       "bash": "执行命令",
       "shell": "执行命令",
       "execute": "执行命令",
+      "exec": "执行命令",
       "run_command": "执行命令",
       "terminal": "执行命令",
       "write": "写入文件",
@@ -115,9 +116,18 @@ function loadConfig(): AuditConfig {
       separator: normalizeEscapedText(loaded.separator ?? DEFAULT_CONFIG.separator),
       icons: { ...DEFAULT_CONFIG.icons, ...loaded.icons },
       rules: {
-        high: { ...DEFAULT_CONFIG.rules.high, ...loaded.rules?.high },
-        medium: { ...DEFAULT_CONFIG.rules.medium, ...loaded.rules?.medium },
-        low: { ...DEFAULT_CONFIG.rules.low, ...loaded.rules?.low },
+        high: {
+          ...normalizeRuleMap(DEFAULT_CONFIG.rules.high),
+          ...normalizeRuleMap(loaded.rules?.high),
+        },
+        medium: {
+          ...normalizeRuleMap(DEFAULT_CONFIG.rules.medium),
+          ...normalizeRuleMap(loaded.rules?.medium),
+        },
+        low: {
+          ...normalizeRuleMap(DEFAULT_CONFIG.rules.low),
+          ...normalizeRuleMap(loaded.rules?.low),
+        },
       },
       sensitivePatterns: loaded.sensitivePatterns ?? DEFAULT_CONFIG.sensitivePatterns,
     };
@@ -138,6 +148,16 @@ function normalizeEscapedText(value: string): string {
     .replace(/\\n/g, "\n")
     .replace(/\\r/g, "\r")
     .replace(/\\t/g, "\t");
+}
+
+function normalizeRuleMap(input: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input ?? {})) {
+    const key = String(k).trim().toLowerCase();
+    if (!key) continue;
+    out[key] = v;
+  }
+  return out;
 }
 
 // ── Session-scoped audit buffer ───────────────────────────────────────────────
@@ -227,17 +247,34 @@ function resolveBufferForSending(ctx?: any): {
 // ── Risk classification ─────────────────────────────────────────────────────
 
 function classifyRisk(toolName: string, params: Record<string, unknown>): ToolRule {
-  const name = toolName.toLowerCase();
+  const rawName = toolName.trim().toLowerCase();
+  const candidates = Array.from(new Set([
+    rawName,
+    rawName.split("/").pop() ?? rawName,
+    rawName.split(".").pop() ?? rawName,
+    rawName.split(":").pop() ?? rawName,
+    rawName.split("_").pop() ?? rawName,
+  ]));
+
+  const pickLabel = (rules: Record<string, string>): string | undefined => {
+    for (const name of candidates) {
+      if (rules[name]) return rules[name];
+    }
+    return undefined;
+  };
 
   // Check configured rules in priority order
-  if (config.rules.high[name]) {
-    return { risk: "high", icon: config.icons.high, label: config.rules.high[name] };
+  const highLabel = pickLabel(config.rules.high);
+  if (highLabel) {
+    return { risk: "high", icon: config.icons.high, label: highLabel };
   }
-  if (config.rules.medium[name]) {
-    return { risk: "medium", icon: config.icons.medium, label: config.rules.medium[name] };
+  const mediumLabel = pickLabel(config.rules.medium);
+  if (mediumLabel) {
+    return { risk: "medium", icon: config.icons.medium, label: mediumLabel };
   }
-  if (config.rules.low[name]) {
-    return { risk: "low", icon: config.icons.low, label: config.rules.low[name] };
+  const lowLabel = pickLabel(config.rules.low);
+  if (lowLabel) {
+    return { risk: "low", icon: config.icons.low, label: lowLabel };
   }
 
   // Heuristic fallback: check params for write-like indicators
@@ -271,12 +308,45 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max) + "...";
 }
 
+function extractCommandText(params: Record<string, unknown>): string {
+  const pick = (...keys: string[]): unknown => {
+    for (const key of keys) {
+      if (params[key] !== undefined && params[key] !== null) return params[key];
+    }
+    return undefined;
+  };
+
+  const direct = pick("command", "cmd", "input", "script", "shellCommand");
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+
+  const argv = pick("argv", "args");
+  if (Array.isArray(argv) && argv.length > 0) {
+    const joined = argv.map((x) => String(x)).join(" ").trim();
+    if (joined) return joined;
+  }
+
+  const nestedCommand = pick("payload", "request", "toolInput");
+  if (nestedCommand && typeof nestedCommand === "object" && !Array.isArray(nestedCommand)) {
+    const nested = nestedCommand as Record<string, unknown>;
+    const nestedDirect =
+      nested.command ?? nested.cmd ?? nested.input ?? nested.script ?? nested.shellCommand;
+    if (typeof nestedDirect === "string" && nestedDirect.trim()) return nestedDirect.trim();
+    const nestedArgv = nested.argv ?? nested.args;
+    if (Array.isArray(nestedArgv) && nestedArgv.length > 0) {
+      const joined = nestedArgv.map((x) => String(x)).join(" ").trim();
+      if (joined) return joined;
+    }
+  }
+
+  return "";
+}
+
 function formatDetail(toolName: string, params: Record<string, unknown>): string {
   const name = toolName.toLowerCase();
 
   // bash/shell commands — show the command
-  if (name === "bash" || name === "shell" || name === "execute" || name === "run_command" || name === "terminal") {
-    const cmd = String(params?.command ?? params?.cmd ?? params?.input ?? "");
+  if (name === "bash" || name === "shell" || name === "execute" || name === "exec" || name === "run_command" || name === "terminal") {
+    const cmd = extractCommandText(params);
     return sanitize(truncate(cmd, 80));
   }
 
@@ -320,7 +390,7 @@ function buildAuditSummary(entries: AuditEntry[]): string {
     return `- ${e.icon} ${e.label}${detail}（${e.status}）`;
   });
 
-  let summary = `📋 本次操作：\n${lines.join("\n")}`;
+  let summary = `🔎 本次操作：\n${lines.join("\n")}`;
 
   if (remaining > 0) {
     summary += `\n- …及其他 ${remaining} 项操作`;
