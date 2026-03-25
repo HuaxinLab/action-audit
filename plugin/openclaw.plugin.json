@@ -1,0 +1,8 @@
+{
+  "id": "action-audit",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
