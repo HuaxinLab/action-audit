@@ -5,7 +5,7 @@ This directory stores cross-version maintenance assets for OpenClaw core behavio
 ## Files
 
 - `source-rules/<version>.patch`
-  - Source-level patch set, strict per-version (for example `source-rules/2026.3.13.patch`).
+  - Source-level patch set, strict per-version (for example `source-rules/2026.3.22.patch`).
 - `reapply-openclaw-message-sending-bridge.sh`
   - Source patch script (strict version mode, no generic fallback).
 - `reapply-openclaw-message-sending-bridge-dist.sh`
@@ -31,7 +31,7 @@ This patch is maintained alongside `action-audit` so behavior can stay consisten
 
 ```bash
 ./patches/reapply-openclaw-message-sending-bridge.sh /path/to/openclaw-root
-./patches/reapply-openclaw-message-sending-bridge.sh /path/to/openclaw-root 2026.3.13
+./patches/reapply-openclaw-message-sending-bridge.sh /path/to/openclaw-root 2026.3.22
 ```
 
 Requirements:

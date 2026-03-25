@@ -157,7 +157,7 @@ systemctl --user restart openclaw-gateway
 
 ```bash
 ./patches/reapply-openclaw-message-sending-bridge.sh /path/to/openclaw-root
-./patches/reapply-openclaw-message-sending-bridge.sh /path/to/openclaw-root 2026.3.13
+./patches/reapply-openclaw-message-sending-bridge.sh /path/to/openclaw-root 2026.3.22
 ```
 
 dist-only 安装版执行方式：
@@ -273,7 +273,7 @@ action-audit/
 ├── README.md                  # 本文档
 ├── patches/
 │   ├── source-rules/
-│   │   └── 2026.3.13.patch
+│   │   └── 2026.3.22.patch
 │   ├── reapply-openclaw-message-sending-bridge.sh
 │   ├── reapply-openclaw-message-sending-bridge-dist.sh
 │   ├── dist-rules/
