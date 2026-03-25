@@ -18,7 +18,7 @@ OpenClaw的回复内容...
 
 (via ⚙️ glm5)
 ——————————
-📋 本次操作：
+🔎 本次操作：
 - ⚠️ 执行命令：systemctl --user restart openclaw-gateway（成功）
 - ⚠️ 写入文件：~/.openclaw/openclaw.json（成功）
 - 🌐 抓取网页：https://example.com/api（成功）
