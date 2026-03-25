@@ -3,7 +3,14 @@
 // to the reply before sending. Default mode is zero-token code-layer processing.
 // Configuration: ~/.openclaw/plugins/action-audit/config.json
 
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  mkdirSync,
+  existsSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -47,10 +54,24 @@ type AuditConfig = {
 const CONFIG_DIR = join(homedir(), ".openclaw", "plugins", "action-audit");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 const DBG_PATH = join(CONFIG_DIR, "debug.log");
+const DBG_MAX_BYTES = 1024 * 1024;
+const DBG_KEEP_BYTES = 256 * 1024;
+
+function rotateDebugLogIfNeeded() {
+  try {
+    if (!existsSync(DBG_PATH)) return;
+    const size = statSync(DBG_PATH).size;
+    if (size <= DBG_MAX_BYTES) return;
+    const text = readFileSync(DBG_PATH, "utf-8");
+    const tail = text.slice(-DBG_KEEP_BYTES);
+    writeFileSync(DBG_PATH, `[truncated ${new Date().toISOString()}]\n${tail}`, "utf-8");
+  } catch {}
+}
 
 function dbg(msg: string) {
   try {
     mkdirSync(CONFIG_DIR, { recursive: true });
+    rotateDebugLogIfNeeded();
     appendFileSync(DBG_PATH, `[${new Date().toISOString()}] ${msg}\n`);
   } catch {}
 }
