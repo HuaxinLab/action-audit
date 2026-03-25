@@ -4,14 +4,19 @@
   "sha256": "89a8af0c82da819e5c82a7d92e569cce35f8d0f40103ff4adc66b9cb9b2d246e",
   "replacements": [
     {
-      "name": "inject-hook-runner",
-      "match": "\tconst { unregister } = registerDispatcher({\n\t\tpending: () => pending,\n\t\twaitForIdle: () => sendChain\n\t});\n\tconst enqueue = (kind, payload) => {",
-      "replace": "\tconst { unregister } = registerDispatcher({\n\t\tpending: () => pending,\n\t\twaitForIdle: () => sendChain\n\t});\n\tconst hookRunner = getGlobalHookRunner();\n\tconst hasMessageSendingHooks = hookRunner?.hasHooks(\"message_sending\") ?? false;\n\tconst enqueue = (kind, payload) => {"
+      "name": "dispatcher-run-message-sending-before-deliver",
+      "match": "\t\t\tawait options.deliver(normalized, { kind });",
+      "replace": "\t\t\tlet outboundPayload = normalized;\n\t\t\tconst hookRunner = getGlobalHookRunner();\n\t\t\tconst hasMessageSendingHooks = hookRunner?.hasHooks(\"message_sending\") ?? false;\n\t\t\tif (hasMessageSendingHooks) {\n\t\t\t\tconst rawText = outboundPayload.text ?? \"\";\n\t\t\t\tconst sendingResult = await hookRunner.runMessageSending({\n\t\t\t\t\tto: options.messageSendingContext?.conversationId ?? \"\",\n\t\t\t\t\tcontent: rawText,\n\t\t\t\t\tmetadata: {\n\t\t\t\t\t\tchannel: options.messageSendingContext?.channelId,\n\t\t\t\t\t\taccountId: options.messageSendingContext?.accountId\n\t\t\t\t\t}\n\t\t\t\t}, {\n\t\t\t\t\tchannelId: options.messageSendingContext?.channelId,\n\t\t\t\t\taccountId: options.messageSendingContext?.accountId,\n\t\t\t\t\tconversationId: options.messageSendingContext?.conversationId,\n\t\t\t\t\tsessionKey: options.messageSendingContext?.sessionKey\n\t\t\t\t});\n\t\t\t\tif (sendingResult?.cancel) return;\n\t\t\t\tif (typeof sendingResult?.content === \"string\") outboundPayload = { ...outboundPayload, text: sendingResult.content };\n\t\t\t}\n\t\t\tawait options.deliver(outboundPayload, { kind });"
     },
     {
-      "name": "wrap-deliver-with-message-sending",
-      "match": "\t\t\tawait options.deliver(normalized, { kind });",
-      "replace": "\t\t\tlet toDeliver = normalized;\n\t\t\tif (hasMessageSendingHooks) {\n\t\t\t\ttry {\n\t\t\t\t\tconst originalContent = toDeliver.text ?? \"\";\n\t\t\t\t\tconst hookResult = await hookRunner?.runMessageSending({\n\t\t\t\t\t\tto: String(options.messageSendingContext?.conversationId ?? options.messageSendingContext?.channelId ?? \"\"),\n\t\t\t\t\t\tcontent: originalContent,\n\t\t\t\t\t\tmetadata: {\n\t\t\t\t\t\t\tchannel: options.messageSendingContext?.channelId ?? \"unknown\",\n\t\t\t\t\t\t\taccountId: options.messageSendingContext?.accountId,\n\t\t\t\t\t\t\tbridge: \"reply-dispatcher\",\n\t\t\t\t\t\t\tkind,\n\t\t\t\t\t\t\tmediaUrls: toDeliver.mediaUrls ?? (toDeliver.mediaUrl ? [toDeliver.mediaUrl] : [])\n\t\t\t\t\t\t}\n\t\t\t\t\t}, {\n\t\t\t\t\t\tchannelId: options.messageSendingContext?.channelId ?? \"unknown\",\n\t\t\t\t\t\taccountId: options.messageSendingContext?.accountId,\n\t\t\t\t\t\tconversationId: options.messageSendingContext?.conversationId\n\t\t\t\t\t});\n\t\t\t\t\tif (hookResult?.cancel) return;\n\t\t\t\t\tif (typeof hookResult?.content === \"string\" && hookResult.content !== originalContent) toDeliver = {\n\t\t\t\t\t\t...toDeliver,\n\t\t\t\t\t\ttext: hookResult.content\n\t\t\t\t\t};\n\t\t\t\t} catch (hookErr) {\n\t\t\t\t\toptions.onError?.(hookErr, { kind });\n\t\t\t\t}\n\t\t\t}\n\t\t\tawait options.deliver(toDeliver, { kind });"
+      "name": "inject-dispatcher-message-context-buffered",
+      "match": "\tconst { dispatcher, replyOptions, markDispatchIdle } = createReplyDispatcherWithTyping(params.dispatcherOptions);",
+      "replace": "\tconst { dispatcher, replyOptions, markDispatchIdle } = createReplyDispatcherWithTyping({\n\t\t...params.dispatcherOptions,\n\t\tmessageSendingContext: {\n\t\t\tchannelId: params.ctx?.Provider ?? params.ctx?.Surface,\n\t\t\taccountId: params.ctx?.AccountId,\n\t\t\tconversationId: params.ctx?.To ?? params.ctx?.OriginatingTo ?? params.ctx?.From,\n\t\t\tsessionKey: params.ctx?.SessionKey\n\t\t}\n\t});"
+    },
+    {
+      "name": "inject-dispatcher-message-context-plain",
+      "match": "\tconst dispatcher = createReplyDispatcher(params.dispatcherOptions);",
+      "replace": "\tconst dispatcher = createReplyDispatcher({\n\t\t...params.dispatcherOptions,\n\t\tmessageSendingContext: {\n\t\t\tchannelId: params.ctx?.Provider ?? params.ctx?.Surface,\n\t\t\taccountId: params.ctx?.AccountId,\n\t\t\tconversationId: params.ctx?.To ?? params.ctx?.OriginatingTo ?? params.ctx?.From,\n\t\t\tsessionKey: params.ctx?.SessionKey\n\t\t}\n\t});"
     }
   ]
 }

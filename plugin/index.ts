@@ -144,6 +144,9 @@ function normalizeEscapedText(value: string): string {
 
 const bufferBySession = new Map<string, AuditEntry[]>();
 const GLOBAL_FALLBACK_KEY = "__global__";
+const FALLBACK_TTL_MS = 60_000;
+type TimedAuditEntry = { entry: AuditEntry; ts: number };
+const fallbackByRoute = new Map<string, TimedAuditEntry[]>();
 
 function getSessionKey(ctx: any): string {
   return String(ctx?.sessionKey ?? GLOBAL_FALLBACK_KEY).trim().toLowerCase();
@@ -163,20 +166,62 @@ function clearBuffer(ctx?: any): void {
   bufferBySession.delete(key);
 }
 
-function pushToGlobalFallback(entry: AuditEntry): void {
-  const global = bufferBySession.get(GLOBAL_FALLBACK_KEY) ?? [];
-  global.push(entry);
-  bufferBySession.set(GLOBAL_FALLBACK_KEY, global);
+function getRouteKey(ctx: any): string {
+  const channelId = String(ctx?.channelId ?? "").trim().toLowerCase();
+  const accountId = String(ctx?.accountId ?? "").trim().toLowerCase();
+  const conversationId = String(ctx?.conversationId ?? "").trim().toLowerCase();
+  if (!channelId && !accountId && !conversationId) return GLOBAL_FALLBACK_KEY;
+  return `${channelId}|${accountId}|${conversationId}`;
 }
 
-function resolveBufferForSending(ctx?: any): { entries: AuditEntry[]; source: string } {
+function pruneTimedBucket(bucket: TimedAuditEntry[], now: number): TimedAuditEntry[] {
+  return bucket.filter((x) => now - x.ts <= FALLBACK_TTL_MS);
+}
+
+function pushToFallback(entry: AuditEntry, ctx?: any): void {
+  const key = getRouteKey(ctx);
+  const now = Date.now();
+  const existing = fallbackByRoute.get(key) ?? [];
+  const pruned = pruneTimedBucket(existing, now);
+  pruned.push({ entry, ts: now });
+  fallbackByRoute.set(key, pruned);
+}
+
+function takeFallbackEntries(routeKey: string): AuditEntry[] {
+  const now = Date.now();
+  const bucket = fallbackByRoute.get(routeKey) ?? [];
+  const pruned = pruneTimedBucket(bucket, now);
+  fallbackByRoute.delete(routeKey);
+  return pruned.map((x) => x.entry);
+}
+
+function resolveBufferForSending(ctx?: any): {
+  entries: AuditEntry[];
+  source: string;
+  routeKey: string;
+} {
   const sessionKey = String(ctx?.sessionKey ?? "").trim().toLowerCase();
   if (sessionKey) {
     const sessionEntries = bufferBySession.get(sessionKey) ?? [];
-    if (sessionEntries.length > 0) return { entries: sessionEntries, source: sessionKey };
+    if (sessionEntries.length > 0) {
+      return {
+        entries: sessionEntries,
+        source: `session:${sessionKey}`,
+        routeKey: GLOBAL_FALLBACK_KEY,
+      };
+    }
   }
-  const fallbackEntries = bufferBySession.get(GLOBAL_FALLBACK_KEY) ?? [];
-  return { entries: fallbackEntries, source: GLOBAL_FALLBACK_KEY };
+  const routeKey = getRouteKey(ctx);
+  const routeEntries = takeFallbackEntries(routeKey);
+  if (routeEntries.length > 0) {
+    return { entries: routeEntries, source: `route:${routeKey}`, routeKey };
+  }
+  const globalEntries = takeFallbackEntries(GLOBAL_FALLBACK_KEY);
+  return {
+    entries: globalEntries,
+    source: `route:${GLOBAL_FALLBACK_KEY}`,
+    routeKey: GLOBAL_FALLBACK_KEY,
+  };
 }
 
 // ── Risk classification ─────────────────────────────────────────────────────
@@ -314,8 +359,8 @@ export default {
 
           const entry: AuditEntry = { risk, icon, label, detail, status };
           getBuffer(ctx).push(entry);
-          // Some channels fire message_sending without sessionKey; keep a fallback buffer.
-          if (sessionKey !== GLOBAL_FALLBACK_KEY) pushToGlobalFallback(entry);
+          // Some channels fire message_sending without sessionKey; keep route-scoped fallback.
+          if (sessionKey !== GLOBAL_FALLBACK_KEY) pushToFallback(entry, ctx);
           dbg(`after_tool_call: buffered entry, buffer size=${getBuffer(ctx).length}`);
         } catch (e: any) {
           dbg(`after_tool_call ERROR: ${e?.message}`);
@@ -328,21 +373,27 @@ export default {
     api.on(
       "message_sending",
       (event: any, ctx: any) => {
-        dbg(`message_sending FIRED: session=${ctx?.sessionKey} content_len=${String(event?.content ?? "").length}`);
         try {
-          const { entries: buffer, source } = resolveBufferForSending(ctx);
+          const ctxKeys = ctx && typeof ctx === "object" ? Object.keys(ctx).slice(0, 20) : [];
+          dbg(`message_sending CTX keys=${ctxKeys.join(",")}`);
+        } catch {}
+        dbg(
+          `message_sending FIRED: session=${ctx?.sessionKey} channel=${ctx?.channelId} account=${ctx?.accountId} conversation=${ctx?.conversationId} content_len=${String(event?.content ?? "").length}`,
+        );
+        try {
+          const { entries: buffer, source, routeKey } = resolveBufferForSending(ctx);
 
           if (buffer.length === 0) return undefined;
 
           const content = String(event?.content ?? "");
           const summary = buildAuditSummary(buffer);
 
-          bufferBySession.delete(source);
-          if (source !== GLOBAL_FALLBACK_KEY) {
-            bufferBySession.delete(GLOBAL_FALLBACK_KEY);
+          if (source.startsWith("session:")) {
+            const key = source.slice("session:".length);
+            bufferBySession.delete(key);
           }
 
-          dbg(`message_sending: appending summary from=${source}`);
+          dbg(`message_sending: appending summary from=${source} route=${routeKey} entries=${buffer.length}`);
           return { content: `${content}${config.separator}${summary}` };
         } catch (e: any) {
           dbg(`message_sending ERROR: ${e?.message}`);

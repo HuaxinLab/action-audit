@@ -19,6 +19,14 @@ Many channel chat reply paths use direct dispatch and do not pass through the sh
 
 This patch is maintained alongside `action-audit` so behavior can stay consistent after upgrades.
 
+## Current dist strategy (2026.3.13)
+
+- Inject `message_sending` before `options.deliver(...)` inside `createReplyDispatcher`.
+- Inject `messageSendingContext` from inbound `ctx` in:
+  - `dispatchInboundMessageWithBufferedDispatcher`
+  - `dispatchInboundMessageWithDispatcher`
+- Forward `sessionKey`/`channelId`/`accountId`/`conversationId` to hook context.
+
 ## Apply
 
 ```bash
