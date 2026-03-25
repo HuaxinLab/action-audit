@@ -147,7 +147,7 @@ systemctl --user restart openclaw-gateway
 
 本项目将 OpenClaw core 的兼容补丁与说明统一放在 `patches/` 目录，和插件一起维护：
 
-- `patches/openclaw-message-sending-bridge.patch`：core 源码补丁（在 `dispatchReplyFromConfig` 单点包装发送）
+- `patches/source-rules/<version>.patch`：core 源码补丁（按版本严格维护）
 - `patches/reapply-openclaw-message-sending-bridge.sh`：升级后重放补丁脚本
 - `patches/reapply-openclaw-message-sending-bridge-dist.sh`：dist-only 安装版热补丁脚本
 - `patches/dist-rules/<version>.json`：dist 版按版本维护的规则文件（含 checksum）
@@ -157,6 +157,7 @@ systemctl --user restart openclaw-gateway
 
 ```bash
 ./patches/reapply-openclaw-message-sending-bridge.sh /path/to/openclaw-root
+./patches/reapply-openclaw-message-sending-bridge.sh /path/to/openclaw-root 2026.3.13
 ```
 
 dist-only 安装版执行方式：
@@ -169,6 +170,7 @@ dist-only 安装版执行方式：
 - 补丁修改的是 OpenClaw core 路径，不是插件目录本身。
 - 脚本会自动备份被修改文件到 `.action-audit-backups/`，再执行补丁。
 - 每次 OpenClaw core 升级后，按需重放补丁并重启网关。
+- 源码补丁采用严格版本模式：缺少对应 `source-rules/<version>.patch` 时会直接报错退出（无 generic 兜底）。
 
 ## 已知问题
 
@@ -270,7 +272,8 @@ channel 插件收到消息
 action-audit/
 ├── README.md                  # 本文档
 ├── patches/
-│   ├── openclaw-message-sending-bridge.patch
+│   ├── source-rules/
+│   │   └── 2026.3.13.patch
 │   ├── reapply-openclaw-message-sending-bridge.sh
 │   ├── reapply-openclaw-message-sending-bridge-dist.sh
 │   ├── dist-rules/
