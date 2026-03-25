@@ -15,6 +15,7 @@ type AuditEntry = {
   risk: RiskLevel;
   icon: string;
   label: string;
+  toolName: string;
   detail: string;
   status: string;
 };
@@ -386,8 +387,9 @@ function buildAuditSummary(entries: AuditEntry[]): string {
   const remaining = sorted.length - displayed.length;
 
   const lines = displayed.map((e) => {
+    const renderedLabel = e.label === "执行命令" ? `调用工具 ${e.toolName}` : e.label;
     const detail = e.detail ? `：${e.detail}` : "";
-    return `- ${e.icon} ${e.label}${detail}（${e.status}）`;
+    return `- ${e.icon} ${renderedLabel}${detail}（${e.status}）`;
   });
 
   let summary = `🔎 本次操作：\n${lines.join("\n")}`;
@@ -427,7 +429,7 @@ export default {
           const { risk, icon, label } = classifyRisk(toolName, params);
           const detail = sanitize(formatDetail(toolName, params));
 
-          const entry: AuditEntry = { risk, icon, label, detail, status };
+          const entry: AuditEntry = { risk, icon, label, toolName, detail, status };
           getBuffer(ctx).push(entry);
           // Some channels fire message_sending without sessionKey; keep route-scoped fallback.
           if (sessionKey !== GLOBAL_FALLBACK_KEY) pushToFallback(entry, ctx);
