@@ -112,7 +112,7 @@ function loadConfig(): AuditConfig {
     // Merge with defaults to ensure all fields exist
     return {
       maxDisplay: loaded.maxDisplay ?? DEFAULT_CONFIG.maxDisplay,
-      separator: loaded.separator ?? DEFAULT_CONFIG.separator,
+      separator: normalizeEscapedText(loaded.separator ?? DEFAULT_CONFIG.separator),
       icons: { ...DEFAULT_CONFIG.icons, ...loaded.icons },
       rules: {
         high: { ...DEFAULT_CONFIG.rules.high, ...loaded.rules?.high },
@@ -133,12 +133,20 @@ function loadConfig(): AuditConfig {
   }
 }
 
+function normalizeEscapedText(value: string): string {
+  return String(value)
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r")
+    .replace(/\\t/g, "\t");
+}
+
 // ── Session-scoped audit buffer ───────────────────────────────────────────────
 
 const bufferBySession = new Map<string, AuditEntry[]>();
+const GLOBAL_FALLBACK_KEY = "__global__";
 
 function getSessionKey(ctx: any): string {
-  return String(ctx?.sessionKey ?? "__global__").trim().toLowerCase();
+  return String(ctx?.sessionKey ?? GLOBAL_FALLBACK_KEY).trim().toLowerCase();
 }
 
 function getBuffer(ctx?: any): AuditEntry[] {
@@ -153,6 +161,22 @@ function getBuffer(ctx?: any): AuditEntry[] {
 function clearBuffer(ctx?: any): void {
   const key = getSessionKey(ctx);
   bufferBySession.delete(key);
+}
+
+function pushToGlobalFallback(entry: AuditEntry): void {
+  const global = bufferBySession.get(GLOBAL_FALLBACK_KEY) ?? [];
+  global.push(entry);
+  bufferBySession.set(GLOBAL_FALLBACK_KEY, global);
+}
+
+function resolveBufferForSending(ctx?: any): { entries: AuditEntry[]; source: string } {
+  const sessionKey = String(ctx?.sessionKey ?? "").trim().toLowerCase();
+  if (sessionKey) {
+    const sessionEntries = bufferBySession.get(sessionKey) ?? [];
+    if (sessionEntries.length > 0) return { entries: sessionEntries, source: sessionKey };
+  }
+  const fallbackEntries = bufferBySession.get(GLOBAL_FALLBACK_KEY) ?? [];
+  return { entries: fallbackEntries, source: GLOBAL_FALLBACK_KEY };
 }
 
 // ── Risk classification ─────────────────────────────────────────────────────
@@ -290,6 +314,8 @@ export default {
 
           const entry: AuditEntry = { risk, icon, label, detail, status };
           getBuffer(ctx).push(entry);
+          // Some channels fire message_sending without sessionKey; keep a fallback buffer.
+          if (sessionKey !== GLOBAL_FALLBACK_KEY) pushToGlobalFallback(entry);
           dbg(`after_tool_call: buffered entry, buffer size=${getBuffer(ctx).length}`);
         } catch (e: any) {
           dbg(`after_tool_call ERROR: ${e?.message}`);
@@ -304,23 +330,26 @@ export default {
       (event: any, ctx: any) => {
         dbg(`message_sending FIRED: session=${ctx?.sessionKey} content_len=${String(event?.content ?? "").length}`);
         try {
-          const buffer = getBuffer(ctx);
+          const { entries: buffer, source } = resolveBufferForSending(ctx);
 
           if (buffer.length === 0) return undefined;
 
           const content = String(event?.content ?? "");
           const summary = buildAuditSummary(buffer);
 
-          clearBuffer(ctx);
+          bufferBySession.delete(source);
+          if (source !== GLOBAL_FALLBACK_KEY) {
+            bufferBySession.delete(GLOBAL_FALLBACK_KEY);
+          }
 
-          dbg(`message_sending: appending summary`);
+          dbg(`message_sending: appending summary from=${source}`);
           return { content: `${content}${config.separator}${summary}` };
         } catch (e: any) {
           dbg(`message_sending ERROR: ${e?.message}`);
           return undefined;
         }
       },
-      { priority: -99 },
+      { priority: -1000 },
     );
   },
 };
