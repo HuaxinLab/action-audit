@@ -19,13 +19,21 @@ Many channel chat reply paths use direct dispatch and do not pass through the sh
 
 This patch is maintained alongside `action-audit` so behavior can stay consistent after upgrades.
 
-## Current dist strategy (2026.3.13)
+## Current strategy
+
+### dist rule: `2026.3.13`
 
 - Patch `dispatchReplyFromConfig` only (single point), no channel plugin edits.
-- Wrap dispatcher sends (`sendToolResult`/`sendBlockReply`/`sendFinalReply`) with a pre-send `runMessageSending`.
-- Pass `sessionKey` from `ctx.SessionKey` as the primary isolation key.
-- Also pass `channelId`/`accountId`/`conversationId` in the message hook context when available.
+- Inject `runMessageSendingForPayload` + `sendWithMessageSending`.
+- Build `wrappedDispatcher` and route send calls through it.
+- Replace both ACP dispatch callsites to use `dispatcher: wrappedDispatcher`.
+- Pass `sessionKey` from `ctx.SessionKey` as the primary isolation key (with channel/account/conversation context).
 - Hook failures degrade to direct send (no message drop).
+
+### source rule: `2026.3.22`
+
+- Same behavior as dist strategy above.
+- Includes `src/plugins/types.ts` extension (`PluginHookMessageContext.sessionKey?: string`).
 
 ## Apply
 
@@ -56,7 +64,8 @@ Optional:
 
 1. Restart gateway.
 2. Send a normal chat message in target channels.
-3. Confirm hooks that depend on `message_sending` are now triggered in direct reply paths.
+3. Confirm hooks that depend on `message_sending` are triggered in direct reply paths.
+4. Cross-channel check: one channel triggers tool call, another channel sends plain text; no stale audit block should appear.
 
 ## Rollback
 

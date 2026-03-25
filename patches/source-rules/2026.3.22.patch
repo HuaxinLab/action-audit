@@ -1,8 +1,8 @@
 diff --git a/src/auto-reply/reply/dispatch-from-config.ts b/src/auto-reply/reply/dispatch-from-config.ts
-index 5b18b417a3..6351c7c0c8 100644
+index 5b18b417a3..7158132be7 100644
 --- a/src/auto-reply/reply/dispatch-from-config.ts
 +++ b/src/auto-reply/reply/dispatch-from-config.ts
-@@ -223,6 +223,71 @@ export async function dispatchReplyFromConfig(params: {
+@@ -223,6 +223,81 @@ export async function dispatchReplyFromConfig(params: {
    const inboundAudio = isInboundAudioContext(ctx);
    const sessionTtsAuto = normalizeTtsAutoMode(sessionStoreEntry.entry?.ttsAuto);
    const hookRunner = getGlobalHookRunner();
@@ -14,7 +14,11 @@ index 5b18b417a3..6351c7c0c8 100644
 +      normalizeMessageChannel(ctx.Provider ?? ctx.Surface) ??
 +      String(ctx.Provider ?? ctx.Surface ?? "unknown").toLowerCase(),
 +    accountId: ctx.AccountId ?? undefined,
-+    conversationId: messageSendingTo || legacyConversation.ConversationID || legacyConversation.conversationId || undefined,
++    conversationId:
++      messageSendingTo ||
++      legacyConversation.ConversationID ||
++      legacyConversation.conversationId ||
++      undefined,
 +    sessionKey: ctx.SessionKey ?? undefined,
 +  };
 +  const runMessageSendingForPayload = async (
@@ -71,21 +75,16 @@ index 5b18b417a3..6351c7c0c8 100644
 +    }
 +    return dispatcher.sendFinalReply(nextPayload);
 +  };
++  const wrappedDispatcher = {
++    ...dispatcher,
++    sendToolResult: (payload: ReplyPayload) => sendWithMessageSending("tool", payload),
++    sendBlockReply: (payload: ReplyPayload) => sendWithMessageSending("block", payload),
++    sendFinalReply: (payload: ReplyPayload) => sendWithMessageSending("final", payload),
++  };
  
    // Extract message context for hooks (plugin and internal)
    const timestamp =
-@@ -327,8 +392,8 @@ export async function dispatchReplyFromConfig(params: {
-       return result.ok;
-     }
-     return mode === "additive"
--      ? dispatcher.sendToolResult(payload)
--      : dispatcher.sendFinalReply(payload);
-+      ? await sendWithMessageSending("tool", payload)
-+      : await sendWithMessageSending("final", payload);
-   };
- 
-   const pluginOwnedBindingRecord =
-@@ -474,7 +539,7 @@ export async function dispatchReplyFromConfig(params: {
+@@ -474,7 +549,7 @@ export async function dispatchReplyFromConfig(params: {
            );
          }
        } else {
@@ -94,7 +93,16 @@ index 5b18b417a3..6351c7c0c8 100644
        }
        const counts = dispatcher.getQueuedCounts();
        counts.final += routedFinalCount;
-@@ -601,7 +666,7 @@ export async function dispatchReplyFromConfig(params: {
+@@ -512,7 +587,7 @@ export async function dispatchReplyFromConfig(params: {
+     const acpDispatch = await dispatchAcpRuntime.tryDispatchAcpReply({
+       ctx,
+       cfg,
+-      dispatcher,
++      dispatcher: wrappedDispatcher,
+       sessionKey: acpDispatchSessionKey,
+       abortSignal: params.replyOptions?.abortSignal,
+       inboundAudio,
+@@ -601,7 +676,7 @@ export async function dispatchReplyFromConfig(params: {
              if (shouldRouteToOriginating) {
                await sendPayloadAsync(deliveryPayload, undefined, false);
              } else {
@@ -103,7 +111,7 @@ index 5b18b417a3..6351c7c0c8 100644
              }
            };
            return run();
-@@ -635,7 +700,7 @@ export async function dispatchReplyFromConfig(params: {
+@@ -635,7 +710,7 @@ export async function dispatchReplyFromConfig(params: {
              if (shouldRouteToOriginating) {
                await sendPayloadAsync(ttsPayload, context?.abortSignal, false);
              } else {
@@ -112,7 +120,16 @@ index 5b18b417a3..6351c7c0c8 100644
              }
            };
            return run();
-@@ -712,7 +777,7 @@ export async function dispatchReplyFromConfig(params: {
+@@ -651,7 +726,7 @@ export async function dispatchReplyFromConfig(params: {
+       const acpTailDispatch = await dispatchAcpRuntime.tryDispatchAcpReply({
+         ctx,
+         cfg,
+-        dispatcher,
++        dispatcher: wrappedDispatcher,
+         sessionKey: acpDispatchSessionKey,
+         abortSignal: params.replyOptions?.abortSignal,
+         inboundAudio,
+@@ -712,7 +787,7 @@ export async function dispatchReplyFromConfig(params: {
            routedFinalCount += 1;
          }
        } else {
@@ -121,7 +138,7 @@ index 5b18b417a3..6351c7c0c8 100644
        }
      }
  
-@@ -764,7 +829,7 @@ export async function dispatchReplyFromConfig(params: {
+@@ -764,7 +839,7 @@ export async function dispatchReplyFromConfig(params: {
                );
              }
            } else {

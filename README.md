@@ -19,11 +19,11 @@ OpenClaw的回复内容...
 (via ⚙️ glm5)
 ——————————
 🔎 本次操作：
-- ⚠️ 执行命令：systemctl --user restart openclaw-gateway（成功）
-- ⚠️ 写入文件：~/.openclaw/openclaw.json（成功）
-- 🌐 抓取网页：https://example.com/api（成功）
-- 📄 读取文件：~/.openclaw/openclaw.json（成功）
-- 📄 搜索内容：*.json in ~/.openclaw/（成功）
+⚠️ 调用工具 exec：systemctl --user restart openclaw-gateway（成功）
+⚠️ 写入文件：~/.openclaw/openclaw.json（成功）
+🌐 抓取网页：https://example.com/api（成功）
+📄 读取文件：~/.openclaw/openclaw.json（成功）
+📄 搜索内容：*.json in ~/.openclaw/（成功）
 ```
 
 纯对话（无工具调用）时不追加任何内容。
@@ -37,21 +37,31 @@ OpenClaw的回复内容...
 | `after_tool_call` | 0 | void 并行 | 每次工具执行完成后触发，捕获工具名、参数、结果，存入内存缓存 |
 | `message_sending` | -1000 | 修改串行 | 回复发送前触发，从缓存取操作列表，格式化后追加到回复末尾 |
 
-### 数据流
+### 数据流（当前稳定方案）
 
 ```
 AI 调用工具（bash/read/write/...）
     ↓
 after_tool_call 触发
     ↓
-捕获 toolName + params + error → 分级 → 存入会话级缓存
+捕获 toolName + params + error → 分级 → 写入 session 缓存
+（仅当 sessionKey 不可用时写入 route fallback）
     ↓
 AI 生成回复
     ↓
-message_sending 触发
+dispatchReplyFromConfig 包装的发送路径触发 message_sending
     ↓
 从缓存取操作列表 → 排序（高风险优先）→ 格式化 → 追加到回复末尾 → 清空缓存
 ```
+
+### 会话隔离策略（重要）
+
+- 主键：`sessionKey`（来自核心层 `ctx.SessionKey`）
+- 正常路径：只读写 session 缓存，不走全局 fallback
+- fallback：仅用于确实拿不到 `sessionKey` 的兼容场景
+- 清理：成功追加后立刻清空对应 session 缓存，并清理对应 route fallback
+
+这套策略用于避免跨渠道串线和重复追加。
 
 ### 风险分级
 
@@ -186,9 +196,9 @@ OpenClaw 实际的工具名可能与预期不同（如 `exec` 而非 `bash`）�
 
 建议应用本项目提供的 core patch（源码版或 dist 版）。
 
-## 修复方案
+## 修复方案（已采用）
 
-### 方案一：改 OpenClaw 核心（推荐）
+### 方案一：改 OpenClaw 核心（推荐，当前采用）
 
 **改动点**：`src/auto-reply/reply/dispatch-from-config.ts` 中的 `dispatchReplyFromConfig()`
 
@@ -198,7 +208,10 @@ OpenClaw 实际的工具名可能与预期不同（如 `exec` 而非 `bash`）�
 - `hookRunner` — Hook 执行器（通过 `getGlobalHookRunner()` 获取）
 - `dispatcher` — 有 `sendFinalReply`/`sendBlockReply`/`sendToolResult` 方法
 
-**改动方式**：包装 dispatcher 发送方法（`sendToolResult`/`sendBlockReply`/`sendFinalReply`），在调用前先过 `runMessageSending` Hook：
+**改动方式**：
+- 在 `dispatchReplyFromConfig` 注入 `runMessageSendingForPayload` 与 `sendWithMessageSending`
+- 创建 `wrappedDispatcher`，包装 `sendToolResult`/`sendBlockReply`/`sendFinalReply`
+- 两处 ACP 调用统一改为 `dispatcher: wrappedDispatcher`
 
 ```
 dispatchReplyFromConfig({ ctx, dispatcher })
@@ -265,6 +278,12 @@ channel 插件收到消息
 
 - 优点：不改核心代码，纯插件实现
 - 缺点：消耗 token、依赖 AI 遵从指令（不稳定）、难以保证当前轮次审计准确性
+
+### 当前版本对应
+
+- dist 版规则：`patches/dist-rules/2026.3.13.json`
+- 源码版规则：`patches/source-rules/2026.3.22.patch`
+- 两者都对齐到同一套 `wrappedDispatcher` 方案
 
 ## 项目结构
 
