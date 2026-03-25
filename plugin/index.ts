@@ -201,11 +201,18 @@ function pruneTimedBucket(bucket: TimedAuditEntry[], now: number): TimedAuditEnt
 
 function pushToFallback(entry: AuditEntry, ctx?: any): void {
   const key = getRouteKey(ctx);
+  if (key === GLOBAL_FALLBACK_KEY) return;
   const now = Date.now();
   const existing = fallbackByRoute.get(key) ?? [];
   const pruned = pruneTimedBucket(existing, now);
   pruned.push({ entry, ts: now });
   fallbackByRoute.set(key, pruned);
+}
+
+function clearFallbackForCtx(ctx?: any): void {
+  const key = getRouteKey(ctx);
+  if (key === GLOBAL_FALLBACK_KEY) return;
+  fallbackByRoute.delete(key);
 }
 
 function takeFallbackEntries(routeKey: string): AuditEntry[] {
@@ -233,16 +240,14 @@ function resolveBufferForSending(ctx?: any): {
     }
   }
   const routeKey = getRouteKey(ctx);
+  if (routeKey === GLOBAL_FALLBACK_KEY) {
+    return { entries: [], source: "route:none", routeKey };
+  }
   const routeEntries = takeFallbackEntries(routeKey);
   if (routeEntries.length > 0) {
     return { entries: routeEntries, source: `route:${routeKey}`, routeKey };
   }
-  const globalEntries = takeFallbackEntries(GLOBAL_FALLBACK_KEY);
-  return {
-    entries: globalEntries,
-    source: `route:${GLOBAL_FALLBACK_KEY}`,
-    routeKey: GLOBAL_FALLBACK_KEY,
-  };
+  return { entries: [], source: "route:empty", routeKey };
 }
 
 // ── Risk classification ─────────────────────────────────────────────────────
@@ -389,16 +394,20 @@ function buildAuditSummary(entries: AuditEntry[]): string {
   const lines = displayed.map((e) => {
     const renderedLabel = e.label === "执行命令" ? `调用工具 ${e.toolName}` : e.label;
     const detail = e.detail ? `：${e.detail}` : "";
-    return `- ${e.icon} ${renderedLabel}${detail}（${e.status}）`;
+    return `${e.icon} ${renderedLabel}${detail}（${e.status}）`;
   });
 
   let summary = `🔎 本次操作：\n${lines.join("\n")}`;
 
   if (remaining > 0) {
-    summary += `\n- …及其他 ${remaining} 项操作`;
+    summary += `\n…及其他 ${remaining} 项操作`;
   }
 
   return summary;
+}
+
+function contentHasAuditBlock(content: string): boolean {
+  return content.includes("🔎 本次操作：");
 }
 
 // ── Plugin Entry ────────────────────────────────────────────────────────────
@@ -431,8 +440,8 @@ export default {
 
           const entry: AuditEntry = { risk, icon, label, toolName, detail, status };
           getBuffer(ctx).push(entry);
-          // Some channels fire message_sending without sessionKey; keep route-scoped fallback.
-          if (sessionKey !== GLOBAL_FALLBACK_KEY) pushToFallback(entry, ctx);
+          // Only use route fallback when sessionKey is truly unavailable.
+          if (sessionKey === GLOBAL_FALLBACK_KEY) pushToFallback(entry, ctx);
           dbg(`after_tool_call: buffered entry, buffer size=${getBuffer(ctx).length}`);
         } catch (e: any) {
           dbg(`after_tool_call ERROR: ${e?.message}`);
@@ -458,11 +467,25 @@ export default {
           if (buffer.length === 0) return undefined;
 
           const content = String(event?.content ?? "");
+
+          // Idempotency guard: some channels may pass through multiple send paths.
+          // If an audit block is already present, skip appending again for this send.
+          if (contentHasAuditBlock(content)) {
+            if (source.startsWith("session:")) {
+              const key = source.slice("session:".length);
+              bufferBySession.delete(key);
+              clearFallbackForCtx(ctx);
+            }
+            dbg(`message_sending: skip duplicate append from=${source} route=${routeKey} entries=${buffer.length}`);
+            return undefined;
+          }
+
           const summary = buildAuditSummary(buffer);
 
           if (source.startsWith("session:")) {
             const key = source.slice("session:".length);
             bufferBySession.delete(key);
+            clearFallbackForCtx(ctx);
           }
 
           dbg(`message_sending: appending summary from=${source} route=${routeKey} entries=${buffer.length}`);
