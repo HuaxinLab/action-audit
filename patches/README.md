@@ -21,7 +21,7 @@ This patch is maintained alongside `action-audit` so behavior can stay consisten
 
 ## Current strategy
 
-### dist rule: `2026.3.13`
+### dist rule: `2026.3.24`
 
 - Patch `dispatchReplyFromConfig` only (single point), no channel plugin edits.
 - Inject `runMessageSendingForPayload` + `sendWithMessageSending`.
@@ -57,7 +57,7 @@ For dist-only runtime installs:
 Optional:
 
 ```bash
-./patches/reapply-openclaw-message-sending-bridge-dist.sh /path/to/openclaw-root 2026.3.13
+./patches/reapply-openclaw-message-sending-bridge-dist.sh /path/to/openclaw-root 2026.3.24
 ```
 
 ## Verify

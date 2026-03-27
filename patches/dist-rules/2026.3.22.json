@@ -1,0 +1,47 @@
+{
+  "version": "2026.3.22",
+  "distFile": "dist/pi-embedded-CzQCqSlH.js",
+  "sha256": "cce5298bcc97e6f0566449f707a856b98cce11290b580ffca80b26b1ca4739dc",
+  "replacements": [
+    {
+      "name": "inject-message-sending-wrapper-in-dispatch-from-config",
+      "match": "\tconst hookRunner = getGlobalHookRunner();\n\tconst timestamp = typeof ctx.Timestamp === \"number\" && Number.isFinite(ctx.Timestamp) ? ctx.Timestamp : void 0;",
+      "replace": "\tconst hookRunner = getGlobalHookRunner();\n\tconst hasMessageSendingHooks = hookRunner?.hasHooks(\"message_sending\") ?? false;\n\tconst messageSendingTo = String(ctx.To ?? ctx.OriginatingTo ?? ctx.From ?? \"\");\n\tconst messageSendingContext = {\n\t\tchannelId: normalizeMessageChannel(ctx.Provider ?? ctx.Surface) ?? String(ctx.Provider ?? ctx.Surface ?? \"unknown\").toLowerCase(),\n\t\taccountId: ctx.AccountId ?? void 0,\n\t\tconversationId: messageSendingTo || ctx.ConversationID || ctx.conversationId || void 0,\n\t\tsessionKey: ctx.SessionKey ?? void 0\n\t};\n\tconst runMessageSendingForPayload = async (payload, kind) => {\n\t\tif (!hasMessageSendingHooks) return payload;\n\t\tconst rawText = payload?.text;\n\t\tif (typeof rawText !== \"string\") return payload;\n\t\ttry {\n\t\t\tconst hookResult = await hookRunner.runMessageSending({\n\t\t\t\tto: messageSendingTo,\n\t\t\t\tcontent: rawText,\n\t\t\t\tmetadata: {\n\t\t\t\t\tchannel: messageSendingContext.channelId,\n\t\t\t\t\taccountId: messageSendingContext.accountId,\n\t\t\t\t\tkind\n\t\t\t\t}\n\t\t\t}, messageSendingContext);\n\t\t\tif (hookResult?.cancel) return null;\n\t\t\tif (typeof hookResult?.content === \"string\" && hookResult.content !== rawText) return {\n\t\t\t\t...payload,\n\t\t\t\ttext: hookResult.content\n\t\t\t};\n\t\t} catch {}\n\t\treturn payload;\n\t};\n\tconst sendWithMessageSending = async (kind, payload) => {\n\t\tconst nextPayload = await runMessageSendingForPayload(payload, kind);\n\t\tif (!nextPayload) return false;\n\t\tif (kind === \"tool\") return dispatcher.sendToolResult(nextPayload);\n\t\tif (kind === \"block\") return dispatcher.sendBlockReply(nextPayload);\n\t\treturn dispatcher.sendFinalReply(nextPayload);\n\t};\n\tconst wrappedDispatcher = {\n\t\t...dispatcher,\n\t\tsendToolResult: (payload) => sendWithMessageSending(\"tool\", payload),\n\t\tsendBlockReply: (payload) => sendWithMessageSending(\"block\", payload),\n\t\tsendFinalReply: (payload) => sendWithMessageSending(\"final\", payload)\n\t};\n\tconst timestamp = typeof ctx.Timestamp === \"number\" && Number.isFinite(ctx.Timestamp) ? ctx.Timestamp : void 0;"
+    },
+    {
+      "name": "replace-fast-abort-final-send",
+      "match": "\t\t\t} else queuedFinal = dispatcher.sendFinalReply(payload);",
+      "replace": "\t\t\t} else queuedFinal = await sendWithMessageSending(\"final\", payload);"
+    },
+    {
+      "name": "replace-tool-send",
+      "match": "\t\t\t\t\tif (shouldRouteToOriginating) await sendPayloadAsync(deliveryPayload, void 0, false);\n\t\t\t\t\telse dispatcher.sendToolResult(deliveryPayload);",
+      "replace": "\t\t\t\t\tif (shouldRouteToOriginating) await sendPayloadAsync(deliveryPayload, void 0, false);\n\t\t\t\t\telse await sendWithMessageSending(\"tool\", deliveryPayload);"
+    },
+    {
+      "name": "replace-block-send",
+      "match": "\t\t\t\t\tif (shouldRouteToOriginating) await sendPayloadAsync(ttsPayload, context?.abortSignal, false);\n\t\t\t\t\telse dispatcher.sendBlockReply(ttsPayload);",
+      "replace": "\t\t\t\t\tif (shouldRouteToOriginating) await sendPayloadAsync(ttsPayload, context?.abortSignal, false);\n\t\t\t\t\telse await sendWithMessageSending(\"block\", ttsPayload);"
+    },
+    {
+      "name": "replace-final-loop-send",
+      "match": "\t\t\t} else queuedFinal = dispatcher.sendFinalReply(ttsReply) || queuedFinal;",
+      "replace": "\t\t\t} else queuedFinal = await sendWithMessageSending(\"final\", ttsReply) || queuedFinal;"
+    },
+    {
+      "name": "replace-tts-only-send",
+      "match": "\t\t\t\t} else queuedFinal = dispatcher.sendFinalReply(ttsOnlyPayload) || queuedFinal;",
+      "replace": "\t\t\t\t} else queuedFinal = await sendWithMessageSending(\"final\", ttsOnlyPayload) || queuedFinal;"
+    },
+    {
+      "name": "replace-acp-dispatch-main-dispatcher",
+      "match": "\t\t\tdispatcher,\n\t\t\tsessionKey: acpDispatchSessionKey,\n\t\t\tabortSignal: params.replyOptions?.abortSignal,\n\t\t\tinboundAudio,\n\t\t\tsessionTtsAuto,\n\t\t\tttsChannel,\n\t\t\tshouldRouteToOriginating,\n\t\t\toriginatingChannel,\n\t\t\toriginatingTo,\n\t\t\tshouldSendToolSummaries,\n\t\t\tbypassForCommand: bypassAcpForCommand,\n\t\t\tonReplyStart: params.replyOptions?.onReplyStart,\n\t\t\trecordProcessed,\n\t\t\tmarkIdle",
+      "replace": "\t\t\tdispatcher: wrappedDispatcher,\n\t\t\tsessionKey: acpDispatchSessionKey,\n\t\t\tabortSignal: params.replyOptions?.abortSignal,\n\t\t\tinboundAudio,\n\t\t\tsessionTtsAuto,\n\t\t\tttsChannel,\n\t\t\tshouldRouteToOriginating,\n\t\t\toriginatingChannel,\n\t\t\toriginatingTo,\n\t\t\tshouldSendToolSummaries,\n\t\t\tbypassForCommand: bypassAcpForCommand,\n\t\t\tonReplyStart: params.replyOptions?.onReplyStart,\n\t\t\trecordProcessed,\n\t\t\tmarkIdle"
+    },
+    {
+      "name": "replace-acp-dispatch-tail-dispatcher",
+      "match": "\t\t\t\tdispatcher,\n\t\t\t\tsessionKey: acpDispatchSessionKey,\n\t\t\t\tabortSignal: params.replyOptions?.abortSignal,\n\t\t\t\tinboundAudio,\n\t\t\t\tsessionTtsAuto,\n\t\t\t\tttsChannel,\n\t\t\t\tshouldRouteToOriginating,\n\t\t\t\toriginatingChannel,\n\t\t\t\toriginatingTo,\n\t\t\t\tshouldSendToolSummaries,\n\t\t\t\tbypassForCommand: false,\n\t\t\t\tonReplyStart: params.replyOptions?.onReplyStart,\n\t\t\t\trecordProcessed,\n\t\t\t\tmarkIdle",
+      "replace": "\t\t\t\tdispatcher: wrappedDispatcher,\n\t\t\t\tsessionKey: acpDispatchSessionKey,\n\t\t\t\tabortSignal: params.replyOptions?.abortSignal,\n\t\t\t\tinboundAudio,\n\t\t\t\tsessionTtsAuto,\n\t\t\t\tttsChannel,\n\t\t\t\tshouldRouteToOriginating,\n\t\t\t\toriginatingChannel,\n\t\t\t\toriginatingTo,\n\t\t\t\tshouldSendToolSummaries,\n\t\t\t\tbypassForCommand: false,\n\t\t\t\tonReplyStart: params.replyOptions?.onReplyStart,\n\t\t\t\trecordProcessed,\n\t\t\t\tmarkIdle"
+    }
+  ]
+}
